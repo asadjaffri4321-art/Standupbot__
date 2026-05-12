@@ -1,10 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { auth, type User } from "@/lib/api";
+import { useEffect } from "react";
 
 export function useAuth() {
   const queryClient = useQueryClient();
 
-  const { data: user, isLoading, error } = useQuery<User | null>({
+  const { data: user, isLoading, error, refetch } = useQuery<User | null>({
     queryKey: ["auth", "me"],
     queryFn: async () => {
       try {
@@ -18,7 +19,14 @@ export function useAuth() {
     },
     retry: false,
     staleTime: 5 * 60 * 1000, // 5 minutes
+    refetchOnWindowFocus: true, // Refetch when window regains focus
+    refetchOnMount: true, // Always refetch on mount
   });
+
+  // Refetch user data when component mounts (useful after OAuth redirect)
+  useEffect(() => {
+    refetch();
+  }, []);
 
   const logout = async () => {
     try {

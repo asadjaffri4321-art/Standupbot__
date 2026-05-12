@@ -44,14 +44,19 @@ function Dashboard() {
     enabled: !!user,
   });
 
-  // Redirect to login if not authenticated
+  // Redirect to login if not authenticated (but only after loading is complete)
   useEffect(() => {
     if (!authLoading && !user) {
-      login();
+      // Add a small delay to avoid redirect loops
+      const timer = setTimeout(() => {
+        login();
+      }, 100);
+      return () => clearTimeout(timer);
     }
   }, [authLoading, user, login]);
 
-  if (authLoading || !user) {
+  // Show loading state while checking authentication
+  if (authLoading) {
     return (
       <div className="min-h-screen bg-[var(--background)] flex items-center justify-center">
         <div className="text-center">
@@ -60,6 +65,11 @@ function Dashboard() {
         </div>
       </div>
     );
+  }
+
+  // If not authenticated after loading, show nothing (will redirect)
+  if (!user) {
+    return null;
   }
 
   return (

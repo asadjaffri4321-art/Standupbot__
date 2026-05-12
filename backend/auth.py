@@ -12,6 +12,7 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "standupbot-hackathon-secret-change-in-prod")
 REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8080")
 
 serializer = URLSafeTimedSerializer(SESSION_SECRET)
 
@@ -21,20 +22,21 @@ COOKIE_MAX_AGE = 7 * 24 * 60 * 60
 
 def get_current_user(request: Request):
     token = request.cookies.get(COOKIE_NAME)
+    # Fallback to Authorization header for cross-origin API calls
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+
     if not token:
         return None
     try:
         user_id = serializer.loads(token, max_age=COOKIE_MAX_AGE)
     except BadSignature:
         return None
-    
-    # Use a fresh database connection
-    import sqlite3
-    from pathlib import Path
-    DB_PATH = Path(__file__).parent / "standupbot.db"
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    
+
+    from db import get_db_connection
+    conn = get_db_connection()
     try:
         user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return dict(user) if user else None
@@ -70,24 +72,19 @@ async def google_callback(code: str, request: Request):
         token_resp = await _exchange_code(code)
         
         if "error" in token_resp:
-            return RedirectResponse(url="http://localhost:8080/?error=oauth_failed")
-        
+            return RedirectResponse(url=f"{FRONTEND_URL}/?error=oauth_failed")
+
         if "access_token" not in token_resp:
             print(f"Token response: {token_resp}")
-            return RedirectResponse(url="http://localhost:8080/?error=no_access_token")
-        
+            return RedirectResponse(url=f"{FRONTEND_URL}/?error=no_access_token")
+
         user_info = await _fetch_user_info(token_resp["access_token"])
     except Exception as e:
         print(f"OAuth error: {e}")
-        return RedirectResponse(url="http://localhost:8080/?error=oauth_exception")
+        return RedirectResponse(url=f"{FRONTEND_URL}/?error=oauth_exception")
 
-    # Use a fresh database connection
-    import sqlite3
-    from pathlib import Path
-    DB_PATH = Path(__file__).parent / "standupbot.db"
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    
+    from db import get_db_connection
+    conn = get_db_connection()
     try:
         existing = conn.execute("SELECT * FROM users WHERE email = ?", (user_info["email"],)).fetchone()
 
@@ -98,11 +95,22 @@ async def google_callback(code: str, request: Request):
                 (user_info.get("name", ""), user_info.get("picture", ""), user_id),
             )
         else:
-            cursor = conn.execute(
-                "INSERT INTO users (email, name, avatar_url) VALUES (?, ?, ?)",
-                (user_info["email"], user_info.get("name", ""), user_info.get("picture", "")),
-            )
-            user_id = cursor.lastrowid
+            if hasattr(conn, 'cursor_factory'):
+                # PostgreSQL
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO users (email, name, avatar_url) VALUES (%s, %s, %s) RETURNING id",
+                    (user_info["email"], user_info.get("name", ""), user_info.get("picture", "")),
+                )
+                user_id = cursor.fetchone()["id"]
+                cursor.close()
+            else:
+                # SQLite
+                cursor = conn.execute(
+                    "INSERT INTO users (email, name, avatar_url) VALUES (?, ?, ?)",
+                    (user_info["email"], user_info.get("name", ""), user_info.get("picture", "")),
+                )
+                user_id = cursor.lastrowid
 
             conn.execute(
                 "UPDATE project_members SET user_id = ? WHERE email = ? AND user_id IS NULL",
@@ -114,25 +122,29 @@ async def google_callback(code: str, request: Request):
         conn.close()
 
     token = serializer.dumps(user_id)
-    response = RedirectResponse(url="http://localhost:8080/dashboard")
+    redirect_url = f"{FRONTEND_URL}/dashboard?token={token}"
+    response = RedirectResponse(url=redirect_url)
+    # Only set domain for localhost; omit it for production so browser uses current domain
+    cookie_domain = "localhost" if "localhost" in FRONTEND_URL else None
     response.set_cookie(
-        COOKIE_NAME, 
-        token, 
-        max_age=COOKIE_MAX_AGE, 
-        httponly=True, 
+        COOKIE_NAME,
+        token,
+        max_age=COOKIE_MAX_AGE,
+        httponly=True,
         samesite="lax",
-        domain="localhost"
+        domain=cookie_domain,
     )
     return response
 
 
 @router.post("/auth/logout")
 def logout(response: Response):
+    cookie_domain = "localhost" if "localhost" in FRONTEND_URL else None
     response.delete_cookie(
         COOKIE_NAME,
-        domain="localhost",
+        domain=cookie_domain,
         httponly=True,
-        samesite="lax"
+        samesite="lax",
     )
     return {"ok": True}
 

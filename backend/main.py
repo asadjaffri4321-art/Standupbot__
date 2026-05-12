@@ -12,9 +12,19 @@ import os
 
 app = FastAPI(title="StandupBot", version="1.0.0")
 
+origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "http://localhost:8080",
+]
+railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+if railway_domain:
+    origins.append(f"https://{railway_domain}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8000", "http://localhost:8080"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -27,9 +37,10 @@ app.include_router(members_global_router)
 app.include_router(standups_router)
 app.include_router(briefs_router)
 
-frontend_dir = os.path.join(os.path.dirname(__file__), "..", "dist")
+frontend_dir = os.path.join(os.path.dirname(__file__), "..", "dist", "client")
 if os.path.isdir(frontend_dir):
     app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dir, "assets")), name="assets")
+    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 
 @app.get("/api/pending-invites")
@@ -74,4 +85,5 @@ def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
